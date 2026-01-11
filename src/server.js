@@ -34,6 +34,11 @@ app.use(morgan('dev'));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+// Root endpoint for platform health checks
+app.get('/', (req, res) => {
+  res.json({ ok: true, service: 'backend_kos' });
+});
+
 
 // Extra request log to help debug when testing from a physical phone
 app.use((req, res, next) => {
