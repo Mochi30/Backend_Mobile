@@ -10,6 +10,15 @@ const { supabase } = require('./db');
 
 const app = express();
 
+function normalizeEnvValue(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 // Disable caching/ETag to avoid 304 responses for mobile clients
 app.disable('etag');
 app.set('etag', false);
@@ -21,13 +30,13 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
-const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
-const MIDTRANS_SERVER_KEY = process.env.MIDTRANS_SERVER_KEY || '';
-const MIDTRANS_CLIENT_KEY = process.env.MIDTRANS_CLIENT_KEY || '';
-const MIDTRANS_IS_PRODUCTION = String(process.env.MIDTRANS_IS_PRODUCTION || '').toLowerCase() === 'true';
+const JWT_SECRET = normalizeEnvValue(process.env.JWT_SECRET) || 'dev_secret';
+const MIDTRANS_SERVER_KEY = normalizeEnvValue(process.env.MIDTRANS_SERVER_KEY);
+const MIDTRANS_CLIENT_KEY = normalizeEnvValue(process.env.MIDTRANS_CLIENT_KEY);
+const MIDTRANS_IS_PRODUCTION = normalizeEnvValue(process.env.MIDTRANS_IS_PRODUCTION).toLowerCase() === 'true';
 const MIDTRANS_SNAP_BASE_URL = MIDTRANS_IS_PRODUCTION ? 'https://app.midtrans.com' : 'https://app.sandbox.midtrans.com';
 const MIDTRANS_CORE_BASE_URL = MIDTRANS_IS_PRODUCTION ? 'https://api.midtrans.com' : 'https://api.sandbox.midtrans.com';
-const APP_DEEP_LINK = process.env.APP_DEEP_LINK || 'apptwo://payment-callback';
+const APP_DEEP_LINK = normalizeEnvValue(process.env.APP_DEEP_LINK) || 'apptwo://payment-callback';
 
 app.use(cors());
 app.use(express.json());
@@ -40,13 +49,11 @@ app.get('/', (req, res) => {
   res.json({ ok: true, service: 'backend_kos' });
 });
 
-
 // Extra request log to help debug when testing from a physical phone
 app.use((req, res, next) => {
   console.log(`[REQ] ${req.method} ${req.originalUrl}`);
   next();
 });
-
 
 function createToken(user) {
   return jwt.sign(
@@ -108,6 +115,16 @@ async function addNotification(userId, title, message) {
     if (error) console.warn('addNotification failed', error.message);
   } catch (e) {
     console.warn('addNotification failed', e?.message || e);
+  }
+}
+
+function isHttpUrl(value) {
+  if (!value) return false;
+  try {
+    const url = new URL(String(value));
+    return url.protocol == 'http:' || url.protocol == 'https:';
+  } catch {
+    return false;
   }
 }
 
@@ -174,6 +191,15 @@ function normalizeMidtransStatus(transactionStatus, fraudStatus) {
   if (status === 'deny') return 'FAILED';
   if (status === 'refund' || status === 'partial_refund') return 'REFUNDED';
   return status ? status.toUpperCase() : 'UNKNOWN';
+}
+
+function resolveBankTransfer(methodLabel) {
+  const value = String(methodLabel || '').toLowerCase();
+  if (value.includes('bca')) return 'bca';
+  if (value.includes('mandiri')) return 'mandiri';
+  if (value.includes('bni')) return 'bni';
+  if (value.includes('bri')) return 'bri';
+  return null;
 }
 
 function resolveEnabledPayments(methodLabel) {
@@ -892,7 +918,9 @@ app.post('/api/payments/purchase', authMiddleware, async (req, res) => {
     referenceId = generateReferenceId();
 
     const methodLabel = String(method || 'Midtrans').trim();
-    const finishUrl = `${APP_DEEP_LINK}?referenceId=${encodeURIComponent(referenceId)}`;
+    const finishUrl = isHttpUrl(APP_DEEP_LINK)
+      ? `${APP_DEEP_LINK}?referenceId=${encodeURIComponent(referenceId)}`
+      : null;
 
     await sbInsertSingle(
       supabase.from('token_transactions').insert({
@@ -921,17 +949,17 @@ app.post('/api/payments/purchase', authMiddleware, async (req, res) => {
         email: String(req.user.email || '').trim() || undefined,
         phone: String(room?.phone || '').trim() || undefined,
       },
-      callbacks: {
-        finish: finishUrl,
-      },
-      gopay: {
-        enable_callback: true,
-        callback_url: finishUrl,
-      },
     };
+    if (finishUrl) {
+      snapPayload.callbacks = { finish: finishUrl };
+      snapPayload.gopay = { enable_callback: true, callback_url: finishUrl };
+    }
 
     const enabledPayments = resolveEnabledPayments(methodLabel);
     if (enabledPayments) snapPayload.enabled_payments = enabledPayments;
+
+    const bankTransfer = resolveBankTransfer(methodLabel);
+    if (bankTransfer) snapPayload.bank_transfer = { bank: bankTransfer };
 
     const snap = await midtransRequest('/snap/v1/transactions', {
       method: 'POST',
