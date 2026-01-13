@@ -27,6 +27,7 @@ const MIDTRANS_CLIENT_KEY = process.env.MIDTRANS_CLIENT_KEY || '';
 const MIDTRANS_IS_PRODUCTION = String(process.env.MIDTRANS_IS_PRODUCTION || '').toLowerCase() === 'true';
 const MIDTRANS_SNAP_BASE_URL = MIDTRANS_IS_PRODUCTION ? 'https://app.midtrans.com' : 'https://app.sandbox.midtrans.com';
 const MIDTRANS_CORE_BASE_URL = MIDTRANS_IS_PRODUCTION ? 'https://api.midtrans.com' : 'https://api.sandbox.midtrans.com';
+const APP_DEEP_LINK = process.env.APP_DEEP_LINK || 'apptwo://payment-callback';
 
 app.use(cors());
 app.use(express.json());
@@ -891,6 +892,7 @@ app.post('/api/payments/purchase', authMiddleware, async (req, res) => {
     referenceId = generateReferenceId();
 
     const methodLabel = String(method || 'Midtrans').trim();
+    const finishUrl = `${APP_DEEP_LINK}?referenceId=${encodeURIComponent(referenceId)}`;
 
     await sbInsertSingle(
       supabase.from('token_transactions').insert({
@@ -918,6 +920,13 @@ app.post('/api/payments/purchase', authMiddleware, async (req, res) => {
         first_name: String(req.user.name || '').trim() || undefined,
         email: String(req.user.email || '').trim() || undefined,
         phone: String(room?.phone || '').trim() || undefined,
+      },
+      callbacks: {
+        finish: finishUrl,
+      },
+      gopay: {
+        enable_callback: true,
+        callback_url: finishUrl,
       },
     };
 
